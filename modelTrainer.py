@@ -1,6 +1,10 @@
 # Importations
+import time
+from itertools import permutations
+
 import joblib
 import lightgbm as lgb
+import numpy as np
 import pandas as pd
 
 
@@ -20,10 +24,10 @@ class ModelTrainer:
         self.model = None
 
     def train(self):
-        x_train, y_train = self._split_features_and_target(self.training_set)
+        x_train, y_train = self._extract_augmented_features_and_target(self.training_set)
         x_test, y_test = self._split_features_and_target(self.test_set)
 
-        self.model = lgb.LGBMClassifier(random_state=42)
+        self.model = lgb.LGBMClassifier(random_state=42, force_row_wise=True)
         self.model.fit(x_train, y_train)
 
         predictions = self.model.predict(x_test)
@@ -31,6 +35,96 @@ class ModelTrainer:
         print("Test accuracy: " + str(round(accuracy, 3)))
 
         return self.model
+
+    def _extract_augmented_features_and_target(self, training_set):
+        player_permutations = self._get_player_permutations()
+        team_1_permutations = np.repeat(player_permutations, len(player_permutations), axis=0)
+        team_2_permutations = np.tile(player_permutations, (len(player_permutations), 1))
+        rows_per_match = len(team_1_permutations) * 2
+        total_rows = len(training_set) * rows_per_match
+        feature_amount = len(self._extract_features(training_set.iloc[:1]).columns)
+        estimated_gb = (total_rows * feature_amount * 4) / (1024 ** 3)
+        last_status_update = time.time()
+
+        print("Training set size before augmentation: " + str(len(training_set)))
+        print("Expected training set size after augmentation: " + str(total_rows))
+        print("Estimated feature matrix memory: " + str(round(estimated_gb, 3)) + " GB")
+
+        x = np.empty((total_rows, feature_amount), dtype=np.float32)
+        y = np.empty(total_rows, dtype=np.int8)
+
+        for match_number, (index, match) in enumerate(training_set.iterrows(), start=1):
+            start_index = (match_number - 1) * rows_per_match
+            middle_index = start_index + len(team_1_permutations)
+            end_index = start_index + rows_per_match
+
+            team_1_player_features = self._get_permuted_player_features(match, "team_1", team_1_permutations)
+            team_2_player_features = self._get_permuted_player_features(match, "team_2", team_2_permutations)
+
+            self._add_augmented_rows(x, start_index, middle_index, match, team_1_player_features, team_2_player_features, False)
+            self._add_augmented_rows(x, middle_index, end_index, match, team_2_player_features, team_1_player_features, True)
+            self._add_augmented_targets(y, start_index, middle_index, end_index, match)
+
+            last_status_update = self._print_augmentation_progress(match_number, len(training_set), end_index, total_rows, last_status_update)
+
+        print("Training set size after augmentation: " + str(len(x)))
+
+        return x, y
+
+    def _print_augmentation_progress(self, match_number, total_matches, generated_rows, total_rows, last_status_update):
+        now = time.time()
+
+        if now - last_status_update < 5:
+            return last_status_update
+
+        progress = generated_rows / total_rows
+        print(
+            "Augmentation progress: " +
+            str(round(progress * 100, 2)) + "% " +
+            "(" + str(match_number) + "/" + str(total_matches) + " matches, " +
+            str(generated_rows) + "/" + str(total_rows) + " rows)"
+        )
+
+        return now
+
+    def _get_player_permutations(self):
+        return np.array(list(permutations(range(5))), dtype=np.intp)
+
+    def _get_permuted_player_features(self, match, team, team_permutations):
+        player_features = np.array([
+            match[team + "_player_10_average_ratings"],
+            match[team + "_player_10_average_interval"],
+            match[team + "_player_10_match_win_percentage"],
+        ], dtype=np.float32)
+
+        return player_features[:, team_permutations].transpose(1, 0, 2).reshape(len(team_permutations), 15)
+
+    def _add_augmented_rows(self, x, start_index, end_index, match, team_1_player_features, team_2_player_features, swapped):
+        if swapped:
+            self._add_team_level_features(x, start_index, end_index, match, "team_2", "team_1")
+        else:
+            self._add_team_level_features(x, start_index, end_index, match, "team_1", "team_2")
+
+        self._add_player_features(x, start_index, end_index, team_1_player_features, team_2_player_features)
+
+    def _add_team_level_features(self, x, start_index, end_index, match, team_1, team_2):
+        x[start_index:end_index, 0] = match[team_1 + "_odds"]
+        x[start_index:end_index, 1] = match[team_2 + "_odds"]
+        x[start_index:end_index, 2] = match[team_1 + "_10_average_ratings"]
+        x[start_index:end_index, 3] = match[team_2 + "_10_average_ratings"]
+
+    def _add_player_features(self, x, start_index, end_index, team_1_player_features, team_2_player_features):
+        x[start_index:end_index, 4:9] = team_1_player_features[:, 0:5]
+        x[start_index:end_index, 9:14] = team_2_player_features[:, 0:5]
+        x[start_index:end_index, 14:19] = team_1_player_features[:, 5:10]
+        x[start_index:end_index, 19:24] = team_2_player_features[:, 5:10]
+        x[start_index:end_index, 24:29] = team_1_player_features[:, 10:15]
+        x[start_index:end_index, 29:34] = team_2_player_features[:, 10:15]
+
+    def _add_augmented_targets(self, y, start_index, middle_index, end_index, match):
+        target = self._get_target(match)
+        y[start_index:middle_index] = target
+        y[middle_index:end_index] = 1 - target
 
     def save_model(self, model_path="model.pkl"):
         if self.model is None:
@@ -46,7 +140,7 @@ class ModelTrainer:
         if self.model is None:
             self.train()
 
-        x_validation = self._extract_features(self.validation_set)
+        x_validation = self._extract_features(self.validation_set).to_numpy(dtype=np.float32)
         probabilities = self.model.predict_proba(x_validation)
 
         stake = 1.0
@@ -166,10 +260,16 @@ class ModelTrainer:
         return win_probability > 0.55 and edge > 0.08 and ev > 0
 
     def _split_features_and_target(self, dataset):
-        x = self._extract_features(dataset)
-        y = dataset.apply(lambda row: 1 if row["team_1_score"] > row["team_2_score"] else 0, axis=1)
+        x = self._extract_features(dataset).to_numpy(dtype=np.float32)
+        y = dataset.apply(self._get_target, axis=1).to_numpy(dtype=np.int8)
 
         return x, y
+
+    def _get_target(self, match):
+        if match["team_1_score"] > match["team_2_score"]:
+            return 1
+
+        return 0
 
     def _extract_features(self, dataset):
         rows = []
@@ -178,17 +278,24 @@ class ModelTrainer:
             row = {
                 "team_1_odds": match["team_1_odds"],
                 "team_2_odds": match["team_2_odds"],
+                "team_1_10_average_ratings": match["team_1_10_average_ratings"],
+                "team_2_10_average_ratings": match["team_2_10_average_ratings"],
             }
 
-            for i, rating in enumerate(match["team_1_player_10_average_ratings"]):
-                row["team_1_player_" + str(i + 1) + "_10_average_rating"] = rating
-
-            for i, rating in enumerate(match["team_2_player_10_average_ratings"]):
-                row["team_2_player_" + str(i + 1) + "_10_average_rating"] = rating
+            self._add_player_feature(row, "team_1", "10_average_rating", match["team_1_player_10_average_ratings"])
+            self._add_player_feature(row, "team_2", "10_average_rating", match["team_2_player_10_average_ratings"])
+            self._add_player_feature(row, "team_1", "10_average_interval", match["team_1_player_10_average_interval"])
+            self._add_player_feature(row, "team_2", "10_average_interval", match["team_2_player_10_average_interval"])
+            self._add_player_feature(row, "team_1", "10_match_win_percentage", match["team_1_player_10_match_win_percentage"])
+            self._add_player_feature(row, "team_2", "10_match_win_percentage", match["team_2_player_10_match_win_percentage"])
 
             rows.append(row)
 
         return pd.DataFrame(rows)
+
+    def _add_player_feature(self, row, team, feature_name, values):
+        for i, value in enumerate(values):
+            row[team + "_player_" + str(i + 1) + "_" + feature_name] = value
 
 if __name__ == "__main__":
     trainer = ModelTrainer("dataset_1.pkl")
