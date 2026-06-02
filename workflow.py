@@ -1,0 +1,76 @@
+# Importations
+from dbManager import DbManager
+from featureExtractor import DataExtractor
+from modelTrainer import ModelTrainer
+from upcomingPredictor import UpcomingPredictor
+from upcomingPredictor import notification
+from vlrScraper import VlrScraper
+
+
+# Workflow
+class Workflow:
+    def __init__(self):
+        self.dataset_path = "dataset_1.pkl"
+        self.model_path = "model.pkl"
+        self.scrape_amount = 100
+
+    def run(self):
+        self._refill_database()
+        self._extract_features()
+        self._train_model()
+        self._predict_upcoming_matches()
+        self._notify_done()
+
+    def _refill_database(self):
+        scraper = VlrScraper()
+        dbManager = DbManager()
+
+        print("Amount of total matches in database: " + str(dbManager.get_match_amount()))
+        print("Amount of total matches that have at least 1 odd available: " + str(dbManager.get_match_with_odds_amount()))
+
+        match_links = scraper.scrape_last_match_links(self.scrape_amount)
+        amount = len(match_links)
+        last_matches = []
+
+        for i, match_link in enumerate(match_links):
+            match = scraper.convert_match_link_to_match_object(match_link)
+            dbManager.insert_match(match)
+
+            print(str(i + 1) + "/" + str(amount) + ": " + str(match) + "\n")
+            last_matches.append(match)
+
+        dbManager.rescrape_missing_player_stats()
+
+    def _extract_features(self):
+        dataExtractor = DataExtractor()
+        dataFrame = dataExtractor.generate_trainingset_1()
+
+        print("Matches with at least 1 team having all 0 player rating histories: " + str(dataExtractor.count_matches_with_empty_team_rating_history(dataFrame)))
+        print(dataFrame[["team_1_score", "team_2_score", "team_1_odds", "team_2_odds", "team_1_player_10_average_ratings", "team_2_player_10_average_ratings", "team_1_10_average_ratings", "team_1_10_average_ratings"]].head())
+
+        dataFrame.to_pickle(self.dataset_path)
+        print("Dataset saved to: " + self.dataset_path)
+
+    def _train_model(self):
+        trainer = ModelTrainer(self.dataset_path)
+        trainer.train()
+        trainer.bet()
+        trainer.save_model(self.model_path)
+
+    def _predict_upcoming_matches(self):
+        predictor = UpcomingPredictor(self.model_path)
+
+        for bet in predictor.bet():
+            print(str(bet))
+
+    def _notify_done(self):
+        notification.notify(
+            title="VLR Predictor",
+            message="The complete workflow is done!",
+            timeout=5
+        )
+
+
+if __name__ == "__main__":
+    workflow = Workflow()
+    workflow.run()
