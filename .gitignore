@@ -24,6 +24,8 @@ ENV/
 *.sqlite
 *.sqlite3
 last_copied_thunderpick_matches.txt
+thunderpick_debug_text.txt
+thunderpick_block_cooldown.json
 
 # Generated datasets and trained model artifacts
 *.pkl

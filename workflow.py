@@ -15,11 +15,16 @@ class Workflow:
         self.scrape_amount = 100
 
     def run(self):
-        self._refill_database()
-        self._extract_features()
-        self._train_model()
-        self._predict_upcoming_matches()
-        self._notify_done()
+        added_matches = self._refill_database()
+
+        if added_matches:
+            self._extract_features()
+            self._train_model()
+        else:
+            print("No new matches added to database. Skipping feature extraction and model training.")
+
+        predicted_upcoming_matches = self._predict_upcoming_matches()
+        self._notify_done(predicted_upcoming_matches)
 
     def _refill_database(self):
         scraper = VlrScraper()
@@ -32,6 +37,10 @@ class Workflow:
         amount = len(match_links)
         last_matches = []
 
+        if amount == 0:
+            print("No new matches found to add to database.")
+            return False
+
         for i, match_link in enumerate(match_links):
             match = scraper.convert_match_link_to_match_object(match_link)
             dbManager.insert_match(match)
@@ -40,6 +49,7 @@ class Workflow:
             last_matches.append(match)
 
         dbManager.rescrape_missing_player_stats()
+        return True
 
     def _extract_features(self):
         dataExtractor = DataExtractor()
@@ -58,15 +68,34 @@ class Workflow:
         trainer.save_model(self.model_path)
 
     def _predict_upcoming_matches(self):
-        predictor = UpcomingPredictor(self.model_path)
+        try:
+            predictor = UpcomingPredictor(self.model_path)
+        except RuntimeError as error:
+            if self._is_thunderpick_unavailable_error(error):
+                print(str(error))
+                print("Upcoming prediction skipped because fresh Thunderpick odds are unavailable.")
+                return False
+
+            raise
 
         for bet in predictor.bet():
             print(str(bet))
 
-    def _notify_done(self):
+        return True
+
+    def _is_thunderpick_unavailable_error(self, error):
+        message = str(error).lower()
+        return "thunderpick" in message and ("blocked" in message or "skipping" in message)
+
+    def _notify_done(self, predicted_upcoming_matches):
+        message = "The complete workflow is done!"
+
+        if not predicted_upcoming_matches:
+            message = "The workflow is done, but upcoming prediction was skipped."
+
         notification.notify(
             title="VLR Predictor",
-            message="The complete workflow is done!",
+            message=message,
             timeout=5
         )
 

@@ -1,6 +1,7 @@
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from functools import cache
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -9,7 +10,7 @@ import joblib
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from thunderpickInterpreter import ThunderpickInterpreter
+from thunderpickScraper import ThunderpickScraper
 
 from plyer import notification
 
@@ -46,7 +47,7 @@ class Bet:
 
 class UpcomingPredictor:
     def __init__(self, model_path="model.pkl"):
-        self.interpreter = ThunderpickInterpreter("last_copied_thunderpick_matches.txt")
+        self.interpreter = ThunderpickScraper()
         self.matchlinks = self.interpreter.map_matchstrings_to_matchlinks(self.interpreter.snip())
         self.model = joblib.load(model_path)
 
@@ -153,8 +154,8 @@ class UpcomingPredictor:
         team_1_players, team_2_players = self._get_match_players(soup)
         team_1_name, team_2_name = self._get_match_team_names(soup)
 
-        team_1_ratings, team_1_match_amounts = self._get_player_10_average_ratings(team_1_players)
-        team_2_ratings, team_2_match_amounts = self._get_player_10_average_ratings(team_2_players)
+        team_1_history_features = self._get_player_10_history_features(team_1_players)
+        team_2_history_features = self._get_player_10_history_features(team_2_players)
 
         predict_info = {
             "match_link": match_link,
@@ -164,12 +165,16 @@ class UpcomingPredictor:
             "team_2_player_ids": [player["id"] for player in team_2_players],
             "team_1_player_amount": len(team_1_players),
             "team_2_player_amount": len(team_2_players),
-            "team_1_player_history_match_amounts": team_1_match_amounts,
-            "team_2_player_history_match_amounts": team_2_match_amounts,
-            "team_1_player_10_average_ratings": team_1_ratings,
-            "team_2_player_10_average_ratings": team_2_ratings,
-            "team_1_10_average_ratings": self._average(team_1_ratings),
-            "team_2_10_average_ratings": self._average(team_2_ratings),
+            "team_1_player_history_match_amounts": team_1_history_features["match_amounts"],
+            "team_2_player_history_match_amounts": team_2_history_features["match_amounts"],
+            "team_1_player_10_average_ratings": team_1_history_features["average_ratings"],
+            "team_2_player_10_average_ratings": team_2_history_features["average_ratings"],
+            "team_1_player_10_average_interval": team_1_history_features["average_intervals"],
+            "team_2_player_10_average_interval": team_2_history_features["average_intervals"],
+            "team_1_player_10_match_win_percentage": team_1_history_features["win_percentages"],
+            "team_2_player_10_match_win_percentage": team_2_history_features["win_percentages"],
+            "team_1_10_average_ratings": self._average(team_1_history_features["average_ratings"]),
+            "team_2_10_average_ratings": self._average(team_2_history_features["average_ratings"]),
         }
 
         if isinstance(match_link_data, dict):
@@ -182,21 +187,27 @@ class UpcomingPredictor:
         row = {
             "team_1_odds": predict_info["team_1_odds"],
             "team_2_odds": predict_info["team_2_odds"],
+            "team_1_10_average_ratings": predict_info["team_1_10_average_ratings"],
+            "team_2_10_average_ratings": predict_info["team_2_10_average_ratings"],
         }
 
-        for i, rating in enumerate(predict_info["team_1_player_10_average_ratings"][:5]):
-            row["team_1_player_" + str(i + 1) + "_10_average_rating"] = rating
-
-        for i, rating in enumerate(predict_info["team_2_player_10_average_ratings"][:5]):
-            row["team_2_player_" + str(i + 1) + "_10_average_rating"] = rating
-
-        for i in range(len(predict_info["team_1_player_10_average_ratings"]), 5):
-            row["team_1_player_" + str(i + 1) + "_10_average_rating"] = 0.0
-
-        for i in range(len(predict_info["team_2_player_10_average_ratings"]), 5):
-            row["team_2_player_" + str(i + 1) + "_10_average_rating"] = 0.0
+        self._add_player_feature(row, "team_1", "10_average_rating", predict_info["team_1_player_10_average_ratings"])
+        self._add_player_feature(row, "team_2", "10_average_rating", predict_info["team_2_player_10_average_ratings"])
+        self._add_player_feature(row, "team_1", "10_average_interval", predict_info["team_1_player_10_average_interval"])
+        self._add_player_feature(row, "team_2", "10_average_interval", predict_info["team_2_player_10_average_interval"])
+        self._add_player_feature(row, "team_1", "10_match_win_percentage", predict_info["team_1_player_10_match_win_percentage"])
+        self._add_player_feature(row, "team_2", "10_match_win_percentage", predict_info["team_2_player_10_match_win_percentage"])
 
         return pd.DataFrame([row])
+
+    def _add_player_feature(self, row, team, feature_name, values):
+        values = values[:5]
+
+        for i, value in enumerate(values):
+            row[team + "_player_" + str(i + 1) + "_" + feature_name] = value
+
+        for i in range(len(values), 5):
+            row[team + "_player_" + str(i + 1) + "_" + feature_name] = 0.0
 
     def _get_match_team_names(self, soup):
         title = soup.title.get_text(" ", strip=True)
@@ -228,14 +239,20 @@ class UpcomingPredictor:
 
         return players[:5], players[5:10]
 
-    def _get_player_10_average_ratings(self, players):
+    def _get_player_10_history_features(self, players):
         average_ratings = []
+        average_intervals = []
+        win_percentages = []
         match_amounts = []
 
         with ThreadPoolExecutor(max_workers=5) as executor:
-            player_ratings = list(executor.map(self._get_player_last_10_ratings, players))
+            player_histories = list(executor.map(self._get_player_last_10_history, players))
 
-        for ratings in player_ratings:
+        for history in player_histories:
+            ratings = [entry["rating"] for entry in history if entry["rating"] is not None]
+            date_times = [entry["date_time"] for entry in history if entry["date_time"] is not None]
+            wins = [entry["won"] for entry in history if entry["won"] is not None]
+
             match_amounts.append(len(ratings))
 
             if ratings:
@@ -243,11 +260,19 @@ class UpcomingPredictor:
             else:
                 average_ratings.append(0.0)
 
-        return average_ratings, match_amounts
+            average_intervals.append(self._get_average_interval(date_times))
+            win_percentages.append(self._get_win_percentage(wins))
 
-    def _get_player_last_10_ratings(self, player):
+        return {
+            "average_ratings": average_ratings,
+            "average_intervals": average_intervals,
+            "win_percentages": win_percentages,
+            "match_amounts": match_amounts,
+        }
+
+    def _get_player_last_10_history(self, player):
         soup = BeautifulSoup(self._get_html(self._get_player_matches_link(player)), "html.parser")
-        ratings = []
+        history = []
         used_match_ids = set()
 
         for match_link in soup.find_all("a", class_="m-item", href=True):
@@ -258,14 +283,67 @@ class UpcomingPredictor:
 
             used_match_ids.add(match_id)
             rating = self._get_player_rating_from_match(match_link["href"], player["id"])
+            date_time = self._get_player_match_date_time(match_link)
+            won = self._get_player_match_win(match_link)
 
-            if rating is not None:
-                ratings.append(rating)
+            history.append({
+                "rating": rating,
+                "date_time": date_time,
+                "won": won,
+            })
 
-            if len(ratings) == 10:
+            if len(history) == 10:
                 break
 
-        return ratings
+        return history
+
+    def _get_player_match_date_time(self, match_link):
+        date = match_link.find("div", class_="m-item-date")
+
+        if not date:
+            return None
+
+        text = date.get_text(" ", strip=True)
+
+        try:
+            return datetime.strptime(text, "%Y/%m/%d %I:%M %p")
+        except ValueError:
+            return None
+
+    def _get_player_match_win(self, match_link):
+        result = match_link.find("div", class_=re.compile(r"\bm-item-result\b"))
+
+        if not result:
+            return None
+
+        classes = result.get("class", [])
+
+        if "mod-win" in classes:
+            return 1.0
+
+        if "mod-loss" in classes:
+            return 0.0
+
+        return None
+
+    def _get_average_interval(self, match_date_times):
+        if len(match_date_times) < 10:
+            return 0.0
+
+        match_date_times = sorted(match_date_times)
+        intervals = []
+
+        for i in range(1, len(match_date_times)):
+            interval = match_date_times[i] - match_date_times[i - 1]
+            intervals.append(interval.total_seconds() / 86400)
+
+        return round(sum(intervals) / len(intervals), 3)
+
+    def _get_win_percentage(self, wins):
+        if len(wins) < 10:
+            return 0.0
+
+        return round(sum(wins) / len(wins), 3)
 
     def _get_player_matches_link(self, player):
         return player["link"].replace("/player/", "/player/matches/")
