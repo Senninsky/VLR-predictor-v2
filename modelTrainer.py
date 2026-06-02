@@ -149,7 +149,7 @@ class ModelTrainer:
         return dataset
 
     def _calculate_opponent_odds(self, odds):
-        bookmaker_vig = 1.081
+        bookmaker_vig = 1.08
         known_probability = 1 / odds
         opponent_probability = bookmaker_vig - known_probability
 

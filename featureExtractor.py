@@ -1,4 +1,6 @@
 # Importations
+from datetime import datetime
+
 import pandas as pd
 
 from dbManager import DbManager
@@ -11,7 +13,11 @@ class DataExtractor:
     def generate_trainingset_1(self):
         matches = self._sort_matches_by_date_time(self.dbManager.get_matches())
         player_rating_histories = {}
+        player_match_date_time_histories = {}
+        player_win_histories = {}
         pending_player_ratings = []
+        pending_player_match_date_times = []
+        pending_player_wins = []
         current_date_time = None
         rows = []
 
@@ -23,18 +29,32 @@ class DataExtractor:
 
             if match_date_time != current_date_time:
                 self._add_pending_player_ratings(player_rating_histories, pending_player_ratings)
+                self._add_pending_player_match_date_times(player_match_date_time_histories, pending_player_match_date_times)
+                self._add_pending_player_wins(player_win_histories, pending_player_wins)
                 pending_player_ratings = []
+                pending_player_match_date_times = []
+                pending_player_wins = []
                 current_date_time = match_date_time
 
             team_1_player_10_average_ratings = self._get_player_10_average_ratings(match.team_1.players, player_rating_histories)
             team_2_player_10_average_ratings = self._get_player_10_average_ratings(match.team_2.players, player_rating_histories)
+            team_1_player_10_average_interval = self._get_player_10_average_intervals(match.team_1.players, player_match_date_time_histories)
+            team_2_player_10_average_interval = self._get_player_10_average_intervals(match.team_2.players, player_match_date_time_histories)
+            team_1_player_10_match_win_percentage = self._get_player_10_match_win_percentages(match.team_1.players, player_win_histories)
+            team_2_player_10_match_win_percentage = self._get_player_10_match_win_percentages(match.team_2.players, player_win_histories)
             team_1_odds, team_2_odds = self._get_match_odds(match)
 
-            rows.append(self._create_training_row(match, team_1_odds, team_2_odds, team_1_player_10_average_ratings, team_2_player_10_average_ratings))
+            rows.append(self._create_training_row(match, team_1_odds, team_2_odds, team_1_player_10_average_ratings, team_2_player_10_average_ratings, team_1_player_10_average_interval, team_2_player_10_average_interval, team_1_player_10_match_win_percentage, team_2_player_10_match_win_percentage))
             self._collect_team_player_ratings(match.team_1.players, pending_player_ratings)
             self._collect_team_player_ratings(match.team_2.players, pending_player_ratings)
+            self._collect_team_player_match_date_times(match.team_1.players, match_date_time, pending_player_match_date_times)
+            self._collect_team_player_match_date_times(match.team_2.players, match_date_time, pending_player_match_date_times)
+            self._collect_team_player_wins(match.team_1.players, match.team_1.score > match.team_2.score, pending_player_wins)
+            self._collect_team_player_wins(match.team_2.players, match.team_2.score > match.team_1.score, pending_player_wins)
 
         self._add_pending_player_ratings(player_rating_histories, pending_player_ratings)
+        self._add_pending_player_match_date_times(player_match_date_time_histories, pending_player_match_date_times)
+        self._add_pending_player_wins(player_win_histories, pending_player_wins)
 
         return pd.DataFrame(rows)
 
@@ -45,7 +65,8 @@ class DataExtractor:
         return self._get_date_time_key(match.date, match.hour)
 
     def _get_date_time_key(self, date, hour):
-        return date[6:10] + "-" + date[3:5] + "-" + date[0:2] + " " + hour
+        date_time = pd.to_datetime(date + " " + hour, dayfirst=True, format="mixed")
+        return date_time.strftime("%Y-%m-%d %H:%M")
 
     def _get_match_odds(self, match):
         team_1_odds = 0.0
@@ -61,7 +82,7 @@ class DataExtractor:
 
         return team_1_odds, team_2_odds
 
-    def _create_training_row(self, match, team_1_odds, team_2_odds, team_1_player_10_average_ratings, team_2_player_10_average_ratings):
+    def _create_training_row(self, match, team_1_odds, team_2_odds, team_1_player_10_average_ratings, team_2_player_10_average_ratings, team_1_player_10_average_interval, team_2_player_10_average_interval, team_1_player_10_match_win_percentage, team_2_player_10_match_win_percentage):
         return {
             "match_id": match.id,
             "date_time": match.date + " " + match.hour,
@@ -73,6 +94,10 @@ class DataExtractor:
             "team_2_player_ids": self._get_player_ids(match.team_2.players),
             "team_1_player_10_average_ratings": team_1_player_10_average_ratings,
             "team_2_player_10_average_ratings": team_2_player_10_average_ratings,
+            "team_1_player_10_average_interval": team_1_player_10_average_interval,
+            "team_2_player_10_average_interval": team_2_player_10_average_interval,
+            "team_1_player_10_match_win_percentage": team_1_player_10_match_win_percentage,
+            "team_2_player_10_match_win_percentage": team_2_player_10_match_win_percentage,
             "team_1_10_average_ratings": self._average(team_1_player_10_average_ratings),
             "team_2_10_average_ratings": self._average(team_2_player_10_average_ratings),
         }
@@ -95,6 +120,53 @@ class DataExtractor:
 
         return player_average_ratings
 
+    def _get_player_10_average_intervals(self, team_players, player_match_date_time_histories):
+        player_average_intervals = []
+
+        for team_player in team_players:
+            player_id = team_player.player.id
+            player_match_date_times = player_match_date_time_histories.get(player_id, [])[-10:]
+            player_average_intervals.append(self._get_average_interval(player_match_date_times))
+
+        return player_average_intervals
+
+    def _get_player_10_match_win_percentages(self, team_players, player_win_histories):
+        player_win_percentages = []
+
+        for team_player in team_players:
+            player_id = team_player.player.id
+            player_wins = player_win_histories.get(player_id, [])[-10:]
+            player_win_percentages.append(self._get_win_percentage(player_wins))
+
+        return player_win_percentages
+
+    def _get_win_percentage(self, player_wins):
+        if len(player_wins) < 10:
+            return 0.0
+
+        return round(sum(player_wins) / len(player_wins), 3)
+
+    def _get_average_interval(self, match_date_times):
+        if len(match_date_times) < 10:
+            return 0.0
+
+        intervals = self._get_intervals(match_date_times)
+        return round(sum(intervals) / len(intervals), 3)
+
+    def _get_intervals(self, match_date_times):
+        intervals = []
+
+        for i in range(1, len(match_date_times)):
+            previous_match_date_time = self._convert_to_date_time(match_date_times[i - 1])
+            current_match_date_time = self._convert_to_date_time(match_date_times[i])
+            interval = current_match_date_time - previous_match_date_time
+            intervals.append(interval.total_seconds() / 86400)
+
+        return intervals
+
+    def _convert_to_date_time(self, date_time):
+        return datetime.strptime(date_time, "%Y-%m-%d %H:%M")
+
     def _collect_team_player_ratings(self, team_players, pending_player_ratings):
         for team_player in team_players:
             rating = self._get_player_rating(team_player)
@@ -102,15 +174,43 @@ class DataExtractor:
             if rating is not None:
                 pending_player_ratings.append((team_player.player.id, rating))
 
+    def _collect_team_player_match_date_times(self, team_players, match_date_time, pending_player_match_date_times):
+        for team_player in team_players:
+            pending_player_match_date_times.append((team_player.player.id, match_date_time))
+
+    def _collect_team_player_wins(self, team_players, won, pending_player_wins):
+        for team_player in team_players:
+            pending_player_wins.append((team_player.player.id, float(won)))
+
     def _add_pending_player_ratings(self, player_rating_histories, pending_player_ratings):
         for player_id, rating in pending_player_ratings:
             self._add_player_rating(player_rating_histories, player_id, rating)
+
+    def _add_pending_player_match_date_times(self, player_match_date_time_histories, pending_player_match_date_times):
+        for player_id, match_date_time in pending_player_match_date_times:
+            self._add_player_match_date_time(player_match_date_time_histories, player_id, match_date_time)
+
+    def _add_pending_player_wins(self, player_win_histories, pending_player_wins):
+        for player_id, won in pending_player_wins:
+            self._add_player_win(player_win_histories, player_id, won)
 
     def _add_player_rating(self, player_rating_histories, player_id, rating):
         if player_id not in player_rating_histories:
             player_rating_histories[player_id] = []
 
         player_rating_histories[player_id].append(rating)
+
+    def _add_player_match_date_time(self, player_match_date_time_histories, player_id, match_date_time):
+        if player_id not in player_match_date_time_histories:
+            player_match_date_time_histories[player_id] = []
+
+        player_match_date_time_histories[player_id].append(match_date_time)
+
+    def _add_player_win(self, player_win_histories, player_id, won):
+        if player_id not in player_win_histories:
+            player_win_histories[player_id] = []
+
+        player_win_histories[player_id].append(won)
 
     def _get_player_rating(self, team_player):
         try:
@@ -146,5 +246,5 @@ if __name__ == "__main__":
     dataExtractor = DataExtractor()
     dataFrame = dataExtractor.generate_trainingset_1()
     print("Matches with at least 1 team having all 0 player rating histories: " + str(dataExtractor.count_matches_with_empty_team_rating_history(dataFrame)))
-    print(dataFrame[["team_1_score", "team_2_score", "team_1_odds", "team_2_odds", "team_1_player_10_average_ratings", "team_2_player_10_average_ratings", "team_1_10_average_ratings", "team_1_10_average_ratings"]].head())
+    print(dataFrame[["team_1_score","team_1_odds", "team_1_player_10_average_ratings", "team_1_10_average_ratings", "team_1_player_10_average_interval", "team_1_player_10_match_win_percentage"]].sample(10))
     dataFrame.to_pickle("dataset_1.pkl")

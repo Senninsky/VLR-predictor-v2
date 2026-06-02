@@ -1,4 +1,5 @@
 import re
+import statistics
 import time
 from difflib import SequenceMatcher
 from functools import cache
@@ -38,6 +39,7 @@ class ThunderpickInterpreter:
             matches.append(self._clean_matchstring("\n".join(current_match)))
 
         print("Matches found in txt file: " + str(len(matches)))
+        self._print_vig_stats(matches)
 
         return matches
 
@@ -118,6 +120,35 @@ class ThunderpickInterpreter:
             "team_2_odds": float(lines[5]),
             "team_2": lines[6],
         }
+
+    def _print_vig_stats(self, match_strings):
+        vigs = self._get_vigs(match_strings)
+
+        if not vigs:
+            print("Average vig: 0.0%")
+            print("Vig standard deviation: 0.0%")
+            return
+
+        average_vig = sum(vigs) / len(vigs)
+        standard_deviation = statistics.pstdev(vigs)
+
+        print("Average vig: " + str(round(average_vig * 100, 3)) + "%")
+        print("Vig standard deviation: " + str(round(standard_deviation * 100, 3)) + "%")
+
+    def _get_vigs(self, match_strings):
+        vigs = []
+
+        for match_string in match_strings:
+            try:
+                match_data = self._parse_match_string(match_string)
+                vigs.append(self._calculate_vig(match_data["team_1_odds"], match_data["team_2_odds"]))
+            except (IndexError, ValueError):
+                continue
+
+        return vigs
+
+    def _calculate_vig(self, team_1_odds, team_2_odds):
+        return (1 / team_1_odds) + (1 / team_2_odds) - 1
 
     def _create_match_link_data(self, match_link, match_data):
         team_1_odds, team_2_odds = self._get_vlr_ordered_odds(match_data)
