@@ -10,7 +10,7 @@ import joblib
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from thunderpickScraper import ThunderpickScraper
+from vlrSearcher import VlrSearcher
 
 from plyer import notification
 
@@ -27,9 +27,11 @@ class Bet:
 
     def __str__(self):
         team_name = self._get_team_name()
+        date_time = self._get_date_time_text()
 
         return (
             "Bet on " + team_name + "\n"
+            + date_time +
             "Match: " + self.data["match_link"] + "\n"
             "Odds: " + str(self.data["odds"]) + "\n"
             "Win probability: " + str(round(self.data["win_probability"] * 100, 1)) + "%\n"
@@ -44,11 +46,19 @@ class Bet:
 
         return self.data["team"]
 
+    def _get_date_time_text(self):
+        date_time = self.data.get("date_time")
+
+        if not date_time:
+            return ""
+
+        return "Date/time: " + date_time.strftime("%Y-%m-%d %H:%M") + "\n"
+
 
 class UpcomingPredictor:
     def __init__(self, model_path="model.pkl"):
-        self.interpreter = ThunderpickScraper()
-        self.matchlinks = self.interpreter.map_matchstrings_to_matchlinks(self.interpreter.snip())
+        self.interpreter = VlrSearcher()
+        self.matchlinks = self.interpreter.snip()
         self.model = joblib.load(model_path)
 
     def bet(self):
@@ -135,6 +145,7 @@ class UpcomingPredictor:
 
         return Bet({
             "match_link": prediction["match_link"],
+            "date_time": prediction.get("date_time"),
             "team": team,
             "team_name": prediction[team + "_name"],
             "odds": odds,

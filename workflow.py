@@ -1,4 +1,8 @@
 # Importations
+from datetime import datetime
+from datetime import timedelta
+from zoneinfo import ZoneInfo
+
 from dbManager import DbManager
 from featureExtractor import DataExtractor
 from modelTrainer import ModelTrainer
@@ -13,6 +17,7 @@ class Workflow:
         self.dataset_path = "dataset_1.pkl"
         self.model_path = "model.pkl"
         self.scrape_amount = 100
+        self.timezone = "Europe/Brussels"
 
     def run(self):
         added_matches = self._refill_database()
@@ -71,21 +76,47 @@ class Workflow:
         try:
             predictor = UpcomingPredictor(self.model_path)
         except RuntimeError as error:
-            if self._is_thunderpick_unavailable_error(error):
+            if self._is_upcoming_odds_unavailable_error(error):
                 print(str(error))
-                print("Upcoming prediction skipped because fresh Thunderpick odds are unavailable.")
+                print("Upcoming prediction skipped because fresh VLR odds are unavailable.")
                 return False
 
             raise
+
+        predictor.matchlinks = self._get_today_and_tomorrow_matches(predictor.matchlinks)
+        self._print_upcoming_match_queue(predictor.matchlinks)
 
         for bet in predictor.bet():
             print(str(bet))
 
         return True
 
-    def _is_thunderpick_unavailable_error(self, error):
+    def _get_today_and_tomorrow_matches(self, matches):
+        today = datetime.now(ZoneInfo(self.timezone)).date()
+        tomorrow = today + timedelta(days=1)
+        allowed_dates = {today, tomorrow}
+
+        filtered_matches = [
+            match
+            for match in matches
+            if match.get("date_time") and match["date_time"].date() in allowed_dates
+        ]
+
+        return sorted(filtered_matches, key=lambda match: match["date_time"])
+
+    def _print_upcoming_match_queue(self, matches):
+        print("Upcoming matches for today/tomorrow with bookmaker odds: " + str(len(matches)))
+
+        for match in matches:
+            print(
+                match["date_time"].strftime("%Y-%m-%d %H:%M") +
+                " - " +
+                match["match_link"]
+            )
+
+    def _is_upcoming_odds_unavailable_error(self, error):
         message = str(error).lower()
-        return "thunderpick" in message and ("blocked" in message or "skipping" in message)
+        return "vlr" in message and ("blocked" in message or "skipping" in message)
 
     def _notify_done(self, predicted_upcoming_matches):
         message = "The complete workflow is done!"
