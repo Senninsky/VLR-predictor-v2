@@ -9,6 +9,8 @@ from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
 
+from bookkeeper import Bookkeeper
+
 
 class VlrSearcher:
     def __init__(
@@ -17,11 +19,13 @@ class VlrSearcher:
         max_event_pages=5,
         max_workers=8,
         bookmaker_key="thunderpick",
+        bookmaker_priority=None,
     ):
         self.default_link = default_link
         self.max_event_pages = max_event_pages
         self.max_workers = max_workers
-        self.bookmaker_key = bookmaker_key.lower()
+        self.bookmaker_priority = self._get_bookmaker_priority(bookmaker_key, bookmaker_priority)
+        self.bookmaker_key = self.bookmaker_priority[0]
 
     def scrape_matches(self):
         events = self._get_ongoing_and_upcoming_events()
@@ -236,24 +240,24 @@ class VlrSearcher:
 
     def _add_bookmaker_odds(self, match):
         soup = BeautifulSoup(self._get_html(match["match_link"]), "html.parser")
-        odds = self._get_bookmaker_odds(soup)
+        bookmaker_odds = self._get_bookmaker_odds(soup)
 
-        if not odds:
+        if not bookmaker_odds:
             return None
 
         return {
             "match_link": match["match_link"],
             "date_time": match.get("date_time"),
-            "team_1_odds": odds[0],
-            "team_2_odds": odds[1],
+            "bookmaker": bookmaker_odds["bookmaker"],
+            "team_1_odds": bookmaker_odds["odds"][0],
+            "team_2_odds": bookmaker_odds["odds"][1],
         }
 
     def _get_bookmaker_odds(self, soup):
-        for bet_item in soup.find_all("a", class_="match-bet-item"):
-            if "mod-noodds" in bet_item.get("class", []):
-                continue
+        bookmaker_candidates = []
 
-            if not self._is_target_bookmaker_bet_item(bet_item):
+        for index, bet_item in enumerate(soup.find_all("a", class_="match-bet-item")):
+            if "mod-noodds" in bet_item.get("class", []):
                 continue
 
             odds = []
@@ -264,21 +268,93 @@ class VlrSearcher:
                 if odd_value is not None:
                     odds.append(odd_value)
 
-            if len(odds) >= 2:
-                return odds[:2]
+            if len(odds) < 2:
+                continue
+
+            bookmaker = self._get_bookmaker_key(bet_item)
+            bookmaker_candidates.append({
+                "bookmaker": bookmaker,
+                "odds": odds[:2],
+                "priority": self._get_bookmaker_priority_index(bookmaker, bet_item),
+                "index": index,
+            })
+
+        if not bookmaker_candidates:
+            return None
+
+        return min(bookmaker_candidates, key=lambda candidate: (candidate["priority"], candidate["index"]))
+
+    def _get_bookmaker_priority(self, bookmaker_key, bookmaker_priority):
+        if bookmaker_priority is None:
+            bookmaker_priority = [bookmaker_key, "rainbet"]
+
+        priority = []
+        seen_bookmakers = set()
+
+        for bookmaker in bookmaker_priority:
+            bookmaker = self._normalize_bookmaker_key(bookmaker)
+
+            if not bookmaker or bookmaker in seen_bookmakers:
+                continue
+
+            seen_bookmakers.add(bookmaker)
+            priority.append(bookmaker)
+
+        return priority or ["thunderpick", "rainbet"]
+
+    def _get_bookmaker_priority_index(self, bookmaker, bet_item):
+        bookmaker_text = self._get_bookmaker_search_text(bet_item)
+
+        for index, priority_bookmaker in enumerate(self.bookmaker_priority):
+            if priority_bookmaker == bookmaker or priority_bookmaker in bookmaker_text:
+                return index
+
+        return len(self.bookmaker_priority)
+
+    def _get_bookmaker_key(self, bet_item):
+        for image in bet_item.find_all("img"):
+            for image_class in image.get("class", []):
+                if image_class.startswith("mod-") and image_class != "mod-noodds":
+                    return self._normalize_bookmaker_key(image_class[4:])
+
+        for image in bet_item.find_all("img"):
+            image_source = image.get("src") or ""
+            image_source_parts = re.split(r"[/._-]+", image_source)
+
+            for part in reversed(image_source_parts):
+                bookmaker = self._normalize_bookmaker_key(part)
+
+                if bookmaker and bookmaker not in ("png", "jpg", "jpeg", "webp", "svg"):
+                    return bookmaker
+
+        href = bet_item.get("href") or ""
+        href_parts = re.split(r"[/._?&=-]+", href)
+        ignored_href_parts = {"http", "https", "www", "com", "gg", "net", "org"}
+
+        for part in href_parts:
+            bookmaker = self._normalize_bookmaker_key(part)
+
+            if bookmaker and bookmaker not in ignored_href_parts:
+                return bookmaker
 
         return None
 
-    def _is_target_bookmaker_bet_item(self, bet_item):
+    def _get_bookmaker_search_text(self, bet_item):
+        searchable_values = []
+
         for image in bet_item.find_all("img"):
-            image_classes = image.get("class", [])
-            image_source = image.get("src") or ""
+            searchable_values.extend(image.get("class", []))
+            searchable_values.append(image.get("src") or "")
+            searchable_values.append(image.get("alt") or "")
+            searchable_values.append(image.get("title") or "")
 
-            if "mod-" + self.bookmaker_key in image_classes or self.bookmaker_key in image_source.lower():
-                return True
+        searchable_values.append(bet_item.get("href") or "")
+        searchable_values.append(bet_item.get_text(" ", strip=True))
 
-        href = bet_item.get("href") or ""
-        return self.bookmaker_key in href.lower()
+        return self._normalize_bookmaker_key(" ".join(searchable_values))
+
+    def _normalize_bookmaker_key(self, value):
+        return re.sub(r"[^a-z0-9]+", "", str(value).lower())
 
     def _parse_odd(self, value):
         try:
@@ -295,6 +371,8 @@ class VlrSearcher:
         return re.sub(r"\s+", " ", element.get_text(" ", strip=True)).strip()
 
     def _print_vig_stats(self, matches):
+        Bookkeeper().keep_odds_pairs(matches)
+
         vigs = [
             self._calculate_vig(match["team_1_odds"], match["team_2_odds"])
             for match in matches

@@ -26,6 +26,7 @@ ENV/
 last_copied_thunderpick_matches.txt
 thunderpick_debug_text.txt
 thunderpick_block_cooldown.json
+bookkeeper_odds_pairs.json
 
 # Generated datasets and trained model artifacts
 *.pkl
