@@ -21,36 +21,16 @@ class Bookkeeper:
                 "Install it with: pip install matplotlib"
             ) from error
 
-        labels = [
-            f"{team_1_odds:g} / {team_2_odds:g}"
-            for team_1_odds, team_2_odds in odds_pairs
-        ]
-        team_1_odds = [odds_pair[0] for odds_pair in odds_pairs]
-        team_2_odds = [odds_pair[1] for odds_pair in odds_pairs]
-        positions = range(len(odds_pairs))
-        bar_width = 0.4
+        lower_odds = [odds_pair[0] for odds_pair in odds_pairs]
+        higher_odds = [odds_pair[1] for odds_pair in odds_pairs]
 
-        _, axis = plt.subplots(figsize=(max(10, len(odds_pairs) * 0.55), 6))
-        axis.bar(
-            [position - bar_width / 2 for position in positions],
-            team_1_odds,
-            width=bar_width,
-            label="Lower odds"
-        )
-        axis.bar(
-            [position + bar_width / 2 for position in positions],
-            team_2_odds,
-            width=bar_width,
-            label="Higher odds"
-        )
+        _, axis = plt.subplots(figsize=(10, 6))
+        axis.scatter(lower_odds, higher_odds, s=70, alpha=0.8)
 
         axis.set_title("Bookkeeper Odds Distribution")
-        axis.set_xlabel("Odds pair")
-        axis.set_ylabel("Decimal odds")
-        axis.set_xticks(list(positions))
-        axis.set_xticklabels(labels, rotation=45, ha="right")
-        axis.legend()
-        axis.grid(axis="y", alpha=0.3)
+        axis.set_xlabel("Lower decimal odds")
+        axis.set_ylabel("Higher decimal odds")
+        axis.grid(alpha=0.3)
 
         plt.tight_layout()
         plt.show()
