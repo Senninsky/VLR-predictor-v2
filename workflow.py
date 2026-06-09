@@ -61,7 +61,7 @@ class Workflow:
         dataFrame = dataExtractor.generate_trainingset_1()
 
         print("Matches with at least 1 team having all 0 player rating histories: " + str(dataExtractor.count_matches_with_empty_team_rating_history(dataFrame)))
-        print(dataFrame[["team_1_score", "team_2_score", "team_1_odds", "team_2_odds", "team_1_player_10_average_ratings", "team_2_player_10_average_ratings", "team_1_10_average_ratings", "team_1_10_average_ratings"]].head())
+        print(dataFrame[["team_1_score", "team_2_score", "team_1_player_10_average_ratings", "team_2_player_10_average_ratings", "team_1_mean_hist_n", "team_2_mean_hist_n", "delta_elo_mean"]].head())
 
         dataFrame.to_pickle(self.dataset_path)
         print("Dataset saved to: " + self.dataset_path)

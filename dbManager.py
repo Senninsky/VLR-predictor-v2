@@ -379,6 +379,27 @@ class DbManager:
             """
         )
 
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_match_players_player_id
+            ON match_players (player_id)
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_match_players_match_team
+            ON match_players (match_id, team_number)
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_matches_date_hour
+            ON matches (date, hour)
+            """
+        )
+
         connection.commit()
         connection.close()
 
