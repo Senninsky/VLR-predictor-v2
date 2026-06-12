@@ -290,8 +290,6 @@ class ModelTrainer:
             "date_time",
             "team_1_score",
             "team_2_score",
-            "team_1_odds",
-            "team_2_odds",
             "team_1_player_ids",
             "team_2_player_ids",
             "team_1_player_10_average_ratings",

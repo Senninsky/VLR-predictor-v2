@@ -199,6 +199,8 @@ class UpcomingPredictor:
             predict_info.get("date_time"),
             include_diagnostics=False,
         )
+        row["team_1_odds"] = predict_info.get("team_1_odds", 0.0)
+        row["team_2_odds"] = predict_info.get("team_2_odds", 0.0)
         features = pd.DataFrame([row])
 
         if not self.feature_columns:

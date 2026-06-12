@@ -1,6 +1,9 @@
 # Importations
+import random
+
 import pandas as pd
 
+from bookkeeper import Bookkeeper
 from dbManager import DbManager
 from featureBuilder import FeatureBuilder
 
@@ -9,6 +12,7 @@ from featureBuilder import FeatureBuilder
 class DataExtractor:
     def __init__(self):
         self.dbManager = DbManager()
+        self.bookkeeper = Bookkeeper()
 
     def generate_trainingset_1(self):
         matches = self._sort_matches_by_date_time(self.dbManager.get_matches())
@@ -43,6 +47,7 @@ class DataExtractor:
     def _create_training_row(self, featureBuilder, match, match_date_time):
         team_1_player_ids = self._get_player_ids(match.team_1.players)
         team_2_player_ids = self._get_player_ids(match.team_2.players)
+        team_1_odds, team_2_odds = self._get_completed_match_odds(match)
         row = featureBuilder.build_match_features(team_1_player_ids, team_2_player_ids, match_date_time)
 
         row.update({
@@ -50,8 +55,8 @@ class DataExtractor:
             "date_time": match_date_time.strftime("%Y-%m-%d %H:%M"),
             "team_1_score": match.team_1.score,
             "team_2_score": match.team_2.score,
-            "team_1_odds": 0.0,
-            "team_2_odds": 0.0,
+            "team_1_odds": team_1_odds,
+            "team_2_odds": team_2_odds,
             "team_1_player_ids": team_1_player_ids,
             "team_2_player_ids": team_2_player_ids,
             "team_1_player_10_average_ratings": row["team_1_player_10_average_ratings"],
@@ -61,6 +66,39 @@ class DataExtractor:
         })
 
         return row
+
+    def _get_completed_match_odds(self, match):
+        if match.team_1.score == match.team_2.score or not match.odds:
+            return 0.0, 0.0
+
+        winner_odds = self._get_random_winner_odds(match.odds)
+
+        if winner_odds <= 0:
+            return 0.0, 0.0
+
+        loser_odds = self.bookkeeper.get_paired_odds(winner_odds)
+
+        if match.team_1.score > match.team_2.score:
+            return winner_odds, loser_odds
+
+        return loser_odds, winner_odds
+
+    def _get_random_winner_odds(self, odds):
+        clean_odds = []
+
+        for odd in odds:
+            try:
+                odd = round(float(odd), 6)
+            except (TypeError, ValueError):
+                continue
+
+            if odd > 0:
+                clean_odds.append(odd)
+
+        if not clean_odds:
+            return 0.0
+
+        return random.choice(clean_odds)
 
     def _apply_pending_updates(self, featureBuilder, pending_updates):
         for update in pending_updates:
