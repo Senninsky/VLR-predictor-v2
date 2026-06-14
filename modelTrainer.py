@@ -78,8 +78,22 @@ class ModelTrainer:
         self.save_model(model_path)
 
     def bet(self):
-        print("Historical betting backtest skipped: stored result-page odds are winner-side leaked and are not used for model validation.")
-        return 0.0
+        x_train, y_train = self._split_features_and_target(self.training_set)
+        x_validation, y_validation = self._split_features_and_target(self.validation_set)
+
+        if len(y_train) == 0 or len(y_validation) == 0:
+            print("Validation betting backtest skipped: not enough data after filtering.")
+            return 0.0
+
+        if len(set(y_train)) < 2:
+            print("Validation betting backtest skipped: training set has only one class.")
+            return 0.0
+
+        model = self._create_model()
+        model.fit(x_train, y_train)
+        probabilities = model.predict_proba(x_validation)
+
+        return self._print_betting_backtest("Validation betting backtest", self.validation_set, probabilities)
 
     def _create_model(self):
         return lgb.LGBMClassifier(
@@ -228,6 +242,108 @@ class ModelTrainer:
 
     def _average_metric(self, metrics, name):
         return sum(metric[name] for metric in metrics) / len(metrics)
+
+    def _print_betting_backtest(self, title, dataset, probabilities):
+        bets = self._get_backtest_bets(dataset, probabilities)
+        matches_with_valid_odds = self._count_matches_with_valid_odds(dataset)
+
+        if not bets:
+            print(
+                title +
+                ": no qualified bets " +
+                "(validation matches=" + str(len(dataset)) +
+                ", matches with valid odds=" + str(matches_with_valid_odds) + ")"
+            )
+            return 0.0
+
+        stake = float(len(bets))
+        profit = sum(bet["profit"] for bet in bets)
+        roi = profit / stake
+        wins = sum(1 for bet in bets if bet["won"])
+        average_odds = sum(bet["odds"] for bet in bets) / len(bets)
+        average_probability = sum(bet["win_probability"] for bet in bets) / len(bets)
+        average_edge = sum(bet["edge"] for bet in bets) / len(bets)
+
+        print(
+            title +
+            ": bets=" + str(len(bets)) +
+            ", stake=" + str(round(stake, 2)) +
+            ", profit=" + str(round(profit, 3)) +
+            ", ROI=" + str(round(roi * 100, 2)) + "%" +
+            ", winrate=" + str(round((wins / len(bets)) * 100, 2)) + "%" +
+            ", avg_odds=" + str(round(average_odds, 3)) +
+            ", avg_probability=" + str(round(average_probability, 3)) +
+            ", avg_edge=" + str(round(average_edge, 3)) +
+            ", validation_matches=" + str(len(dataset)) +
+            ", matches_with_valid_odds=" + str(matches_with_valid_odds)
+        )
+
+        return roi
+
+    def _get_backtest_bets(self, dataset, probabilities):
+        bets = []
+
+        for (_, match), probability in zip(dataset.iterrows(), probabilities):
+            team_1_probability = float(probability[1])
+            team_2_probability = float(probability[0])
+
+            team_1_bet = self._create_backtest_bet(match, "team_1", team_1_probability)
+            team_2_bet = self._create_backtest_bet(match, "team_2", team_2_probability)
+
+            if team_1_bet:
+                bets.append(team_1_bet)
+
+            if team_2_bet:
+                bets.append(team_2_bet)
+
+        return bets
+
+    def _create_backtest_bet(self, match, team, win_probability):
+        odds = self._get_match_odds(match, team)
+
+        if odds <= 1.0:
+            return None
+
+        implied_probability = 1 / odds
+        edge = win_probability - implied_probability
+        ev = win_probability * odds - 1
+
+        if not (win_probability > 0.55 and edge > 0.08 and ev > 0):
+            return None
+
+        won = self._did_team_win(match, team)
+        profit = odds - 1 if won else -1.0
+
+        return {
+            "team": team,
+            "odds": odds,
+            "win_probability": win_probability,
+            "edge": edge,
+            "ev": ev,
+            "won": won,
+            "profit": profit,
+        }
+
+    def _count_matches_with_valid_odds(self, dataset):
+        amount = 0
+
+        for _, match in dataset.iterrows():
+            if self._get_match_odds(match, "team_1") > 1.0 and self._get_match_odds(match, "team_2") > 1.0:
+                amount += 1
+
+        return amount
+
+    def _get_match_odds(self, match, team):
+        try:
+            return float(match[team + "_odds"])
+        except (KeyError, TypeError, ValueError):
+            return 0.0
+
+    def _did_team_win(self, match, team):
+        if team == "team_1":
+            return match["team_1_score"] > match["team_2_score"]
+
+        return match["team_2_score"] > match["team_1_score"]
 
     def _extract_training_set(self):
         training_end = int(len(self.dataset) * 0.7)
